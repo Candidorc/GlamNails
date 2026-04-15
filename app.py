@@ -23,26 +23,26 @@ genai.configure(api_key=API_KEY)
 @st.cache_resource
 def get_working_model():
     try:
-        # 1. Le pedimos a Google TU lista exacta de modelos permitidos
+        # Le pedimos a Google TU lista exacta de modelos permitidos
         modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 2. Buscamos el mejor modelo visual entre los que tienes
-        mejores_opciones = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro-vision']
+        # Priorizamos los modelos 1.5 que son los mejores para visión con la API de pago
+        mejores_opciones = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-pro-vision']
         
         for opcion in mejores_opciones:
             if opcion in modelos_disponibles:
                 return genai.GenerativeModel(opcion)
                 
-        # 3. Si no encuentra los exactos, coge el primero que sea "flash" o "vision"
+        # Si no encuentra los exactos, coge el primero que sea "flash" o "vision"
         for modelo in modelos_disponibles:
             if 'flash' in modelo or 'vision' in modelo:
                 return genai.GenerativeModel(modelo)
                 
-        # 4. Plan de emergencia extremo
+        # Plan de emergencia
         if modelos_disponibles:
             return genai.GenerativeModel(modelos_disponibles[0])
             
-    except Exception as e:
+    except Exception:
         return None
     return None
 
@@ -74,20 +74,36 @@ def generate_nail_image(base_img: Image.Image, ref_img: Image.Image):
     if not model:
         raise Exception("No hay ningún modelo de Google disponible en tu cuenta.")
     
-    response = model.generate_content(
-        [
-            "BASE IMAGE (hand to keep):",
-            base_img,
-            "REFERENCE IMAGE (nail design to apply):",
-            ref_img,
-            PROMPT,
-        ]
-    )
-    # Intentar extraer imagen de la respuesta
-    for part in response.candidates[0].content.parts:
-        if part.inline_data:
-            return Image.open(io.BytesIO(part.inline_data.data))
-    return None
+    try:
+        response = model.generate_content(
+            [
+                "BASE IMAGE (hand to keep):",
+                base_img,
+                "REFERENCE IMAGE (nail design to apply):",
+                ref_img,
+                PROMPT,
+            ]
+        )
+        
+        # Variables para capturar lo que devuelva Google
+        imagen_generada = None
+        texto_generado = None
+
+        # 1. Guardamos el texto si la IA nos da consejos
+        if hasattr(response, 'text') and response.text:
+            texto_generado = response.text
+            
+        # 2. Buscamos la imagen en la respuesta (si la IA la ha dibujado)
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    imagen_generada = Image.open(io.BytesIO(part.inline_data.data))
+        
+        return imagen_generada, texto_generado
+
+    except Exception as e:
+        st.error(f"Error en la comunicación con Google: {e}")
+        return None, None
 
 # ── UI (DISEÑO GLAMNAILS) ────────────────────────────────────────────────
 st.set_page_config(page_title="GlamNails AI", page_icon="💅", layout="centered")
@@ -158,28 +174,31 @@ if uploaded_ref:
             st.image(base_img, use_container_width=True)
 
         with st.spinner("Creando magia en tus uñas... 💅"):
-            try:
-                result_img = generate_nail_image(base_img, ref_img)
+            result_img, result_text = generate_nail_image(base_img, ref_img)
 
-                if result_img:
-                    with col2:
-                        st.markdown('<div class="upload-label">Después con IA</div>', unsafe_allow_html=True)
-                        st.image(result_img, use_container_width=True)
+            # 1. Si la IA devuelve la imagen editada, la mostramos
+            if result_img:
+                with col2:
+                    st.markdown('<div class="upload-label">Después con IA</div>', unsafe_allow_html=True)
+                    st.image(result_img, use_container_width=True)
 
-                    buf = io.BytesIO()
-                    result_img.save(buf, format="JPEG", quality=95)
-                    st.download_button(
-                        label="Aplicar y Descargar Diseño",
-                        data=buf.getvalue(),
-                        file_name="glamnails_result.jpg",
-                        mime="image/jpeg"
-                    )
-                    st.markdown('<div class="success-badge">✨ ¡Diseño generado con éxito!</div>', unsafe_allow_html=True)
-                else:
-                    st.warning("⚠️ La IA analizó la imagen pero no devolvió el dibujo de vuelta. Intenta con un diseño más sencillo o espera unos minutos por si hay límite de cuota.")
-
-            except Exception as e:
-                # Si esto falla, te dirá exactamente QUÉ modelo falló y por qué
-                st.error(f"Error técnico con el modelo de IA: {str(e)}")
+                buf = io.BytesIO()
+                result_img.save(buf, format="JPEG", quality=95)
+                st.download_button(
+                    label="Aplicar y Descargar Diseño",
+                    data=buf.getvalue(),
+                    file_name="glamnails_result.jpg",
+                    mime="image/jpeg"
+                )
+                st.markdown('<div class="success-badge">✨ ¡Diseño generado con éxito!</div>', unsafe_allow_html=True)
+            
+            # 2. Si la IA devuelve texto (análisis, colores, etc.), lo mostramos
+            if result_text:
+                st.info("💡 Análisis detallado de la IA:")
+                st.write(result_text)
+                
+            # 3. Si por algún motivo Google no devuelve nada
+            if not result_img and not result_text:
+                st.warning("⚠️ La IA de Google no devolvió datos. Intenta subir una foto diferente.")
 else:
     st.markdown('<div class="info-box">Selecciona una imagen arriba para empezar.</div>', unsafe_allow_html=True)
