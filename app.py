@@ -7,7 +7,6 @@ import io
 
 # ── Configuración Segura para la Nube ──────────────────────────────────────────
 
-# Intentamos leer la clave desde st.secrets (Streamlit Cloud)
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
@@ -20,19 +19,31 @@ if not API_KEY:
 # Configuración del cliente Gemini
 genai.configure(api_key=API_KEY)
 
-# --- Buscador Automático de Modelo (Evita el Error 404) ---
+# --- El Buscador Definitivo de Modelos ---
 @st.cache_resource
 def get_working_model():
-    # Probamos en orden de mejor a más compatible
-    modelos_a_probar = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-pro']
-    for nombre in modelos_a_probar:
-        try:
-            m = genai.GenerativeModel(nombre)
-            # Prueba mínima para validar el nombre
-            m.generate_content("test")
-            return m
-        except Exception:
-            continue
+    try:
+        # 1. Le pedimos a Google TU lista exacta de modelos permitidos
+        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 2. Buscamos el mejor modelo visual entre los que tienes
+        mejores_opciones = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro-vision']
+        
+        for opcion in mejores_opciones:
+            if opcion in modelos_disponibles:
+                return genai.GenerativeModel(opcion)
+                
+        # 3. Si no encuentra los exactos, coge el primero que sea "flash" o "vision"
+        for modelo in modelos_disponibles:
+            if 'flash' in modelo or 'vision' in modelo:
+                return genai.GenerativeModel(modelo)
+                
+        # 4. Plan de emergencia extremo
+        if modelos_disponibles:
+            return genai.GenerativeModel(modelos_disponibles[0])
+            
+    except Exception as e:
+        return None
     return None
 
 model = get_working_model()
@@ -61,25 +72,22 @@ def get_base_images():
 
 def generate_nail_image(base_img: Image.Image, ref_img: Image.Image):
     if not model:
-        return None
+        raise Exception("No hay ningún modelo de Google disponible en tu cuenta.")
     
-    try:
-        response = model.generate_content(
-            [
-                "BASE IMAGE (hand to keep):",
-                base_img,
-                "REFERENCE IMAGE (nail design to apply):",
-                ref_img,
-                PROMPT,
-            ]
-        )
-        # Intentar extraer imagen de la respuesta
-        for part in response.candidates[0].content.parts:
-            if part.inline_data:
-                return Image.open(io.BytesIO(part.inline_data.data))
-        return None
-    except Exception:
-        return None
+    response = model.generate_content(
+        [
+            "BASE IMAGE (hand to keep):",
+            base_img,
+            "REFERENCE IMAGE (nail design to apply):",
+            ref_img,
+            PROMPT,
+        ]
+    )
+    # Intentar extraer imagen de la respuesta
+    for part in response.candidates[0].content.parts:
+        if part.inline_data:
+            return Image.open(io.BytesIO(part.inline_data.data))
+    return None
 
 # ── UI (DISEÑO GLAMNAILS) ────────────────────────────────────────────────
 st.set_page_config(page_title="GlamNails AI", page_icon="💅", layout="centered")
@@ -168,9 +176,10 @@ if uploaded_ref:
                     )
                     st.markdown('<div class="success-badge">✨ ¡Diseño generado con éxito!</div>', unsafe_allow_html=True)
                 else:
-                    st.warning("⚠️ La IA generó una descripción pero no pudo procesar la imagen visual. Intenta con un diseño más sencillo.")
+                    st.warning("⚠️ La IA analizó la imagen pero no devolvió el dibujo de vuelta. Intenta con un diseño más sencillo o espera unos minutos por si hay límite de cuota.")
 
             except Exception as e:
-                st.error(f"Error técnico: {str(e)}")
+                # Si esto falla, te dirá exactamente QUÉ modelo falló y por qué
+                st.error(f"Error técnico con el modelo de IA: {str(e)}")
 else:
     st.markdown('<div class="info-box">Selecciona una imagen arriba para empezar.</div>', unsafe_allow_html=True)
