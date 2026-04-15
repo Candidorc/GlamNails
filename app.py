@@ -1,67 +1,49 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import random
 from PIL import Image
 import io
 
-# ── Configuración Segura para la Nube ──────────────────────────────────────────
+# ── API KEY ────────────────────────────────────────────────────────────────────
+# Funciona tanto en local (.env / variable de entorno) como en Streamlit Cloud (secrets)
+api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 
-try:
-    API_KEY = st.secrets["GOOGLE_API_KEY"]
-except:
-    API_KEY = os.getenv("GOOGLE_API_KEY", "")
-
-if not API_KEY:
-    st.error("🔑 No se encontró la API KEY. Configúrala en 'Advanced Settings > Secrets'.")
+if not api_key:
+    st.error("🔑 No se encontró la API KEY. Configúrala en Streamlit Cloud > Settings > Secrets.")
     st.stop()
 
-# Configuración del cliente Gemini
-genai.configure(api_key=API_KEY)
+client = genai.Client(api_key=api_key)
 
-# --- El Buscador Definitivo de Modelos ---
-@st.cache_resource
-def get_working_model():
-    try:
-        # Le pedimos a Google TU lista exacta de modelos permitidos
-        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priorizamos los modelos 1.5 que son los mejores para visión con la API de pago
-        mejores_opciones = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'models/gemini-pro-vision']
-        
-        for opcion in mejores_opciones:
-            if opcion in modelos_disponibles:
-                return genai.GenerativeModel(opcion)
-                
-        # Si no encuentra los exactos, coge el primero que sea "flash" o "vision"
-        for modelo in modelos_disponibles:
-            if 'flash' in modelo or 'vision' in modelo:
-                return genai.GenerativeModel(modelo)
-                
-        # Plan de emergencia
-        if modelos_disponibles:
-            return genai.GenerativeModel(modelos_disponibles[0])
-            
-    except Exception:
-        return None
-    return None
-
-model = get_working_model()
-
+# ── Configuración ──────────────────────────────────────────────────────────────
 BASE_IMAGES_DIR = "base_images"
 
 PROMPT = """
 You are a professional nail art editor.
-Task: Take the nail design from the REFERENCE image and apply it exactly to the nails of the hand shown in the BASE image.
-KEEP UNCHANGED: Hand shape, skin tone, lighting, background, jewelry.
-ONLY MODIFY: The nail design (color, pattern, art).
-Photorealistic result.
+
+Task: Take the nail design from the REFERENCE image and apply it exactly to the nails 
+of the hand shown in the BASE image.
+
+KEEP UNCHANGED (do not modify at all):
+- Hand shape and fingers
+- Skin tone and texture
+- Lighting and shadows
+- Background and fabric
+- Rings, jewelry, or accessories
+- Camera angle and composition
+
+ONLY MODIFY:
+- The nail design (color, pattern, art, finish, texture)
+
+The result must look like a real, high-end beauty advertisement photo.
+The nail design must be applied with perfect realism, matching the lighting of the base image.
+No distortions. No artifacts. Photorealistic result.
 """
 
 # ── Utilidades ─────────────────────────────────────────────────────────────────
 def get_base_images():
     if not os.path.exists(BASE_IMAGES_DIR):
-        os.makedirs(BASE_IMAGES_DIR, exist_ok=True)
         return []
     extensions = (".jpg", ".jpeg", ".png", ".webp")
     return [
@@ -70,135 +52,134 @@ def get_base_images():
         if f.lower().endswith(extensions)
     ]
 
+def pil_to_bytes(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG")
+    return buf.getvalue()
+
 def generate_nail_image(base_img: Image.Image, ref_img: Image.Image):
-    if not model:
-        raise Exception("No hay ningún modelo de Google disponible en tu cuenta.")
-    
-    try:
-        response = model.generate_content(
-            [
-                "BASE IMAGE (hand to keep):",
-                base_img,
-                "REFERENCE IMAGE (nail design to apply):",
-                ref_img,
-                PROMPT,
-            ]
+    response = client.models.generate_content(
+        model="gemini-2.0-flash-exp-image-generation",
+        contents=[
+            types.Part.from_text("BASE IMAGE (hand to keep):"),
+            types.Part.from_bytes(data=pil_to_bytes(base_img), mime_type="image/jpeg"),
+            types.Part.from_text("REFERENCE IMAGE (nail design to apply):"),
+            types.Part.from_bytes(data=pil_to_bytes(ref_img), mime_type="image/jpeg"),
+            types.Part.from_text(PROMPT),
+        ],
+        config=types.GenerateContentConfig(
+            response_modalities=["image", "text"]
         )
-        
-        # Variables para capturar lo que devuelva Google
-        imagen_generada = None
-        texto_generado = None
+    )
 
-        # 1. Guardamos el texto si la IA nos da consejos
-        if hasattr(response, 'text') and response.text:
-            texto_generado = response.text
-            
-        # 2. Buscamos la imagen en la respuesta (si la IA la ha dibujado)
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
-                    imagen_generada = Image.open(io.BytesIO(part.inline_data.data))
-        
-        return imagen_generada, texto_generado
+    for part in response.candidates[0].content.parts:
+        if part.inline_data is not None:
+            return Image.open(io.BytesIO(part.inline_data.data))
 
-    except Exception as e:
-        st.error(f"Error en la comunicación con Google: {e}")
-        return None, None
+    return None
 
-# ── UI (DISEÑO GLAMNAILS) ────────────────────────────────────────────────
+# ── UI ─────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="GlamNails AI", page_icon="💅", layout="centered")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=Jost:wght@300;400;500&display=swap');
+
 html, body, [class*="css"] { font-family: 'Jost', sans-serif; }
-.stApp { background: #FCF5F3; } 
-.top-bar {
-    background: linear-gradient(135deg, #C48E85, #A06962);
-    color: white; padding: 1.2rem; border-radius: 0 0 25px 25px;
-    text-align: center; font-size: 1.2rem; font-weight: 500;
-    margin-top: -3.5rem; margin-bottom: 2rem;
-    box-shadow: 0 4px 10px rgba(160, 105, 98, 0.2);
-    display: flex; justify-content: space-between; align-items: center;
-}
-h1, h2, h3 { color: #3D2B29 !important; }
-.title-block { text-align: center; padding: 0.5rem 0 1.5rem 0; }
-.title-block h1 { font-size: 2rem; font-weight: 600; margin-bottom: 0.2rem; }
-.upload-label { color: #3D2B29; font-size: 0.95rem; font-weight: 600; text-align: center; margin-bottom: 0.5rem; }
-.info-box { background: #FFFFFF; border-radius: 20px; padding: 1.2rem; color: #5C433F; font-size: 0.9rem; text-align: center; margin: 1.5rem 0; box-shadow: 0 4px 15px rgba(0,0,0,0.04); }
+.stApp { background: #0e0b0f; }
+h1, h2, h3 { font-family: 'Cormorant Garamond', serif !important; }
+.title-block { text-align: center; padding: 2.5rem 0 1rem 0; }
+.title-block h1 { font-size: 3rem; font-weight: 300; color: #f0e6d3; margin-bottom: 0.2rem; }
+.title-block p { color: #9e8f85; font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; }
+.divider { border: none; border-top: 1px solid #2a2028; margin: 1.5rem 0; }
+.upload-label { color: #c4a882; font-size: 0.75rem; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 500; margin-bottom: 0.5rem; }
+.info-box { background: #1a1520; border: 1px solid #2a2028; border-left: 2px solid #c4a882; border-radius: 4px; padding: 0.8rem 1rem; color: #9e8f85; font-size: 0.8rem; margin: 1rem 0; }
 .stButton > button {
-    background: linear-gradient(135deg, #C48E85, #A06962) !important;
-    color: #FFFFFF !important; border: none !important; border-radius: 30px !important;
-    font-family: 'Jost', sans-serif !important; font-size: 1rem !important;
-    font-weight: 500 !important; padding: 0.8rem 2rem !important; width: 100% !important;
-    box-shadow: 0 4px 12px rgba(160, 105, 98, 0.3) !important;
+    background: linear-gradient(135deg, #c4a882, #a08060) !important;
+    color: #0e0b0f !important; border: none !important; border-radius: 2px !important;
+    font-family: 'Jost', sans-serif !important; font-size: 0.8rem !important;
+    font-weight: 500 !important; letter-spacing: 0.2em !important;
+    text-transform: uppercase !important; padding: 0.7rem 2rem !important; width: 100% !important;
 }
-.success-badge { background: #FFFFFF; color: #A06962; border-radius: 20px; padding: 0.8rem; font-size: 0.9rem; font-weight: 500; text-align: center; margin: 1rem 0; }
-[data-testid="stImage"] img { border-radius: 15px; }
+.success-badge { background: #1a1520; border: 1px solid #4a7c59; color: #7ec89a; border-radius: 4px; padding: 0.5rem 1rem; font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; text-align: center; margin: 0.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="top-bar">
-    <span></span>
-    <span>GlamNails AI</span>
-    <span>👤</span>
-</div>
 <div class="title-block">
-    <h1>Inspírate y Renueva tu Uña</h1>
+    <h1>💅 GlamNails AI</h1>
+    <p>Generador automático de contenido para manicuristas</p>
 </div>
+<hr class="divider">
 """, unsafe_allow_html=True)
 
 base_images = get_base_images()
 
 if not base_images:
-    st.error("⚠️ No se encontraron imágenes en `base_images/`. Asegúrate de que la carpeta esté en la raíz de GitHub.")
+    st.error("⚠️ No se encontraron imágenes en `base_images/`. Asegúrate de que la carpeta esté subida a GitHub con fotos dentro.")
     st.stop()
 
-st.markdown('<div class="upload-label">Inspiración de Pinterest (Sube tu diseño)</div>', unsafe_allow_html=True)
-uploaded_ref = st.file_uploader(label="referencia", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
+st.markdown('<div class="upload-label">Imagen de referencia (Pinterest, etc.)</div>', unsafe_allow_html=True)
+uploaded_ref = st.file_uploader(
+    label="referencia",
+    type=["jpg", "jpeg", "png", "webp"],
+    label_visibility="collapsed"
+)
 
 if uploaded_ref:
     ref_img = Image.open(uploaded_ref).convert("RGB")
-    st.image(ref_img, caption="Diseño Seleccionado", use_container_width=True)
-    
-    st.markdown(f'<div class="info-box">✨ Usaremos una de tus {len(base_images)} uñas base.</div>', unsafe_allow_html=True)
+    st.image(ref_img, caption="✦ Tu referencia")
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="info-box">
+        ✦ Se seleccionará automáticamente una de tus <strong>{len(base_images)}</strong> imágenes base al azar.
+    </div>
+    """, unsafe_allow_html=True)
 
-    if st.button("Procesando con IA ✨"):
+    if st.button("✦  Generar contenido"):
         chosen_path = random.choice(base_images)
         base_img = Image.open(chosen_path).convert("RGB")
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown('<div class="upload-label">Antes</div>', unsafe_allow_html=True)
-            st.image(base_img, use_container_width=True)
+            st.markdown('<div class="upload-label">Imagen base</div>', unsafe_allow_html=True)
+            st.image(base_img)
 
-        with st.spinner("Creando magia en tus uñas... 💅"):
-            result_img, result_text = generate_nail_image(base_img, ref_img)
+        with st.spinner("Aplicando diseño de uñas... 20-40 segundos ✦"):
+            try:
+                result_img = generate_nail_image(base_img, ref_img)
 
-            # 1. Si la IA devuelve la imagen editada, la mostramos
-            if result_img:
-                with col2:
-                    st.markdown('<div class="upload-label">Después con IA</div>', unsafe_allow_html=True)
-                    st.image(result_img, use_container_width=True)
+                if result_img:
+                    with col2:
+                        st.markdown('<div class="upload-label">Resultado</div>', unsafe_allow_html=True)
+                        st.image(result_img)
 
-                buf = io.BytesIO()
-                result_img.save(buf, format="JPEG", quality=95)
-                st.download_button(
-                    label="Aplicar y Descargar Diseño",
-                    data=buf.getvalue(),
-                    file_name="glamnails_result.jpg",
-                    mime="image/jpeg"
-                )
-                st.markdown('<div class="success-badge">✨ ¡Diseño generado con éxito!</div>', unsafe_allow_html=True)
-            
-            # 2. Si la IA devuelve texto (análisis, colores, etc.), lo mostramos
-            if result_text:
-                st.info("💡 Análisis detallado de la IA:")
-                st.write(result_text)
-                
-            # 3. Si por algún motivo Google no devuelve nada
-            if not result_img and not result_text:
-                st.warning("⚠️ La IA de Google no devolvió datos. Intenta subir una foto diferente.")
+                    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+                    buf = io.BytesIO()
+                    result_img.save(buf, format="JPEG", quality=95)
+                    st.download_button(
+                        label="⬇  Descargar imagen",
+                        data=buf.getvalue(),
+                        file_name="glamnails_result.jpg",
+                        mime="image/jpeg"
+                    )
+                    st.markdown('<div class="success-badge">✦ Imagen generada con éxito</div>', unsafe_allow_html=True)
+                else:
+                    st.error("Gemini no devolvió imagen. Prueba con otra foto de referencia.")
+
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
 else:
-    st.markdown('<div class="info-box">Selecciona una imagen arriba para empezar.</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="info-box">
+        ↑ Sube una imagen de inspiración (Pinterest, Instagram) y el sistema hará el resto.
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("""
+<hr class="divider">
+<div style="text-align:center; color:#3a3038; font-size:0.7rem; letter-spacing:0.15em; padding-bottom:1rem;">
+    GLAMNAILS AI · POWERED BY GEMINI
+</div>
+""", unsafe_allow_html=True)
