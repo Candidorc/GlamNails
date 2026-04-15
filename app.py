@@ -60,7 +60,7 @@ def get_base_images():
 
 def generate_nail_image(base_img: Image.Image, ref_img: Image.Image):
     # Usamos el modelo gemini-1.5-flash que es el más estable para visión
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     response = model.generate_content(
         [
