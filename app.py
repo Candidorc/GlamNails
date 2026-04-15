@@ -8,7 +8,6 @@ import io
 # ── Configuración Segura para la Nube ──────────────────────────────────────────
 
 # Intentamos leer la clave desde st.secrets (Streamlit Cloud)
-# Si no existe (en local), intentará buscarla en las variables de entorno
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
@@ -21,34 +20,36 @@ if not API_KEY:
 # Configuración del cliente Gemini
 genai.configure(api_key=API_KEY)
 
+# --- Buscador Automático de Modelo (Evita el Error 404) ---
+@st.cache_resource
+def get_working_model():
+    # Probamos en orden de mejor a más compatible
+    modelos_a_probar = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-pro']
+    for nombre in modelos_a_probar:
+        try:
+            m = genai.GenerativeModel(nombre)
+            # Prueba mínima para validar el nombre
+            m.generate_content("test")
+            return m
+        except Exception:
+            continue
+    return None
+
+model = get_working_model()
+
 BASE_IMAGES_DIR = "base_images"
 
 PROMPT = """
 You are a professional nail art editor.
-
-Task: Take the nail design from the REFERENCE image and apply it exactly to the nails 
-of the hand shown in the BASE image.
-
-KEEP UNCHANGED (do not modify at all):
-- Hand shape and fingers
-- Skin tone and texture
-- Lighting and shadows
-- Background and fabric
-- Rings, jewelry, or accessories
-- Camera angle and composition
-
-ONLY MODIFY:
-- The nail design (color, pattern, art, finish, texture)
-
-The result must look like a real, high-end beauty advertisement photo.
-The nail design must be applied with perfect realism, matching the lighting of the base image.
-No distortions. No artifacts. Photorealistic result.
+Task: Take the nail design from the REFERENCE image and apply it exactly to the nails of the hand shown in the BASE image.
+KEEP UNCHANGED: Hand shape, skin tone, lighting, background, jewelry.
+ONLY MODIFY: The nail design (color, pattern, art).
+Photorealistic result.
 """
 
 # ── Utilidades ─────────────────────────────────────────────────────────────────
 def get_base_images():
     if not os.path.exists(BASE_IMAGES_DIR):
-        # Crear la carpeta si no existe para evitar errores
         os.makedirs(BASE_IMAGES_DIR, exist_ok=True)
         return []
     extensions = (".jpg", ".jpeg", ".png", ".webp")
@@ -59,109 +60,56 @@ def get_base_images():
     ]
 
 def generate_nail_image(base_img: Image.Image, ref_img: Image.Image):
-    # Usamos el modelo gemini-1.5-flash que es el más estable para visión
-    model = genai.GenerativeModel('gemini-pro')
+    if not model:
+        return None
     
-    response = model.generate_content(
-        [
-            "BASE IMAGE (hand to keep):",
-            base_img,
-            "REFERENCE IMAGE (nail design to apply):",
-            ref_img,
-            PROMPT,
-        ]
-    )
-
-    # Buscar la imagen en la respuesta
     try:
-        # En la versión actual de la API, Gemini devuelve la imagen si se le pide
-        # Pero si genera texto, este bloque captura el error
+        response = model.generate_content(
+            [
+                "BASE IMAGE (hand to keep):",
+                base_img,
+                "REFERENCE IMAGE (nail design to apply):",
+                ref_img,
+                PROMPT,
+            ]
+        )
+        # Intentar extraer imagen de la respuesta
         for part in response.candidates[0].content.parts:
             if part.inline_data:
                 return Image.open(io.BytesIO(part.inline_data.data))
-        
-        # Si no hay inline_data, devolvemos la respuesta como texto si fuera necesario
         return None
     except Exception:
         return None
 
-# ── UI (NUEVO DISEÑO GLAMNAILS) ────────────────────────────────────────────────
-st.set_page_config(
-    page_title="GlamNails AI",
-    page_icon="💅",
-    layout="centered"
-)
+# ── UI (DISEÑO GLAMNAILS) ────────────────────────────────────────────────
+st.set_page_config(page_title="GlamNails AI", page_icon="💅", layout="centered")
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&display=swap');
-
 html, body, [class*="css"] { font-family: 'Jost', sans-serif; }
 .stApp { background: #FCF5F3; } 
-
 .top-bar {
     background: linear-gradient(135deg, #C48E85, #A06962);
-    color: white;
-    padding: 1.2rem;
-    border-radius: 0 0 25px 25px;
-    text-align: center;
-    font-size: 1.2rem;
-    font-weight: 500;
-    margin-top: -3.5rem;
-    margin-bottom: 2rem;
+    color: white; padding: 1.2rem; border-radius: 0 0 25px 25px;
+    text-align: center; font-size: 1.2rem; font-weight: 500;
+    margin-top: -3.5rem; margin-bottom: 2rem;
     box-shadow: 0 4px 10px rgba(160, 105, 98, 0.2);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; justify-content: space-between; align-items: center;
 }
-
 h1, h2, h3 { color: #3D2B29 !important; }
 .title-block { text-align: center; padding: 0.5rem 0 1.5rem 0; }
 .title-block h1 { font-size: 2rem; font-weight: 600; margin-bottom: 0.2rem; }
-
-.upload-label { 
-    color: #3D2B29; 
-    font-size: 0.95rem; 
-    font-weight: 600; 
-    text-align: center;
-    margin-bottom: 0.5rem; 
-}
-
-.info-box { 
-    background: #FFFFFF; 
-    border-radius: 20px; 
-    padding: 1.2rem; 
-    color: #5C433F; 
-    font-size: 0.9rem; 
-    text-align: center;
-    margin: 1.5rem 0; 
-    box-shadow: 0 4px 15px rgba(0,0,0,0.04); 
-}
-
+.upload-label { color: #3D2B29; font-size: 0.95rem; font-weight: 600; text-align: center; margin-bottom: 0.5rem; }
+.info-box { background: #FFFFFF; border-radius: 20px; padding: 1.2rem; color: #5C433F; font-size: 0.9rem; text-align: center; margin: 1.5rem 0; box-shadow: 0 4px 15px rgba(0,0,0,0.04); }
 .stButton > button {
     background: linear-gradient(135deg, #C48E85, #A06962) !important;
-    color: #FFFFFF !important; 
-    border: none !important; 
-    border-radius: 30 : px !important;
-    font-family: 'Jost', sans-serif !important; 
-    font-size: 1rem !important;
-    font-weight: 500 !important; 
-    padding: 0.8rem 2rem !important; 
-    width: 100% !important;
+    color: #FFFFFF !important; border: none !important; border-radius: 30px !important;
+    font-family: 'Jost', sans-serif !important; font-size: 1rem !important;
+    font-weight: 500 !important; padding: 0.8rem 2rem !important; width: 100% !important;
     box-shadow: 0 4px 12px rgba(160, 105, 98, 0.3) !important;
 }
-
-.success-badge { 
-    background: #FFFFFF; 
-    color: #A06962; 
-    border-radius: 20px; 
-    padding: 0.8rem; 
-    font-size: 0.9rem; 
-    font-weight: 500; 
-    text-align: center; 
-    margin: 1rem 0; 
-}
-
+.success-badge { background: #FFFFFF; color: #A06962; border-radius: 20px; padding: 0.8rem; font-size: 0.9rem; font-weight: 500; text-align: center; margin: 1rem 0; }
 [data-testid="stImage"] img { border-radius: 15px; }
 </style>
 """, unsafe_allow_html=True)
@@ -180,7 +128,7 @@ st.markdown("""
 base_images = get_base_images()
 
 if not base_images:
-    st.error("⚠️ No se encontraron imágenes en `base_images/`. Asegúrate de subir la carpeta a GitHub.")
+    st.error("⚠️ No se encontraron imágenes en `base_images/`. Asegúrate de que la carpeta esté en la raíz de GitHub.")
     st.stop()
 
 st.markdown('<div class="upload-label">Inspiración de Pinterest (Sube tu diseño)</div>', unsafe_allow_html=True)
@@ -220,10 +168,9 @@ if uploaded_ref:
                     )
                     st.markdown('<div class="success-badge">✨ ¡Diseño generado con éxito!</div>', unsafe_allow_html=True)
                 else:
-                    st.warning("⚠️ Google Gemini no pudo generar la imagen. Esto puede pasar si el diseño es muy complejo. Intenta con otra foto.")
+                    st.warning("⚠️ La IA generó una descripción pero no pudo procesar la imagen visual. Intenta con un diseño más sencillo.")
 
             except Exception as e:
                 st.error(f"Error técnico: {str(e)}")
-
 else:
     st.markdown('<div class="info-box">Selecciona una imagen arriba para empezar.</div>', unsafe_allow_html=True)
